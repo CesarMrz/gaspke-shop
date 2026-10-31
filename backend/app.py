@@ -127,9 +127,23 @@ def get_user_from_token(token):
     conn.close()
     return row['user_id'] if row else None
 
+
+@app.route('/version')
+def version():
+    return "GaspKe v2 - with auth"
+
 @app.route('/')
 def index():
-    return send_from_directory(app.static_folder, 'index.html')
+    from flask import make_response
+    import os
+    html_path = os.path.join(os.path.dirname(__file__), '..', 'index.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        html = f.read()
+    resp = make_response(html)
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 @app.route('/api/register', methods=['POST'])
 def register():
