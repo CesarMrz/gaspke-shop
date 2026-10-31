@@ -176,7 +176,8 @@ const defaultPlatforms = [
 ];
 
 let platforms = JSON.parse(JSON.stringify(defaultPlatforms));
-let state = { balance: 50, cart: [], accounts: [], sales: [], favorites: [], theme: 'light' };
+let state = { balance: 50, cart: [], accounts: [], sales: [], favorites: [], theme: 'light', user: null, token: null };
+let authMode = 'login';
 let adminUnlocked = false;
 const ADMIN_CODE = "gaspke2026";
 let searchTerm = '';
@@ -184,6 +185,13 @@ let sortBy = 'name';
 let categoryFilter = 'Todas';
 
 function loadState() {
+  const token = localStorage.getItem('gaspke-token');
+  const user = localStorage.getItem('gaspke-user');
+  if (token && user) {
+    state.token = token;
+    state.user = JSON.parse(user);
+    state.balance = state.user.balance || 50;
+  }
   const saved = localStorage.getItem('gaspke-completo');
   if (saved) {
     const data = JSON.parse(saved);
@@ -251,9 +259,10 @@ function showSection(section, el) {
 
   if (section === 'dashboard') {
     const recent = state.sales.slice(-3).reverse();
+    updateGreeting();
     content.innerHTML = `
       <div class="header">
-        <div><h1>¡Hola! ✨</h1><p style="color:var(--text-dim);margin-top:4px">Bienvenida a GaspKe Shop</p></div>
+        <div><h1 id="greeting">¡Hola! ✨</h1><p style="color:var(--text-dim);margin-top:4px">Bienvenida a GaspKe Shop</p></div>
         <div class="balance-box"><div><div style="font-size:11px;color:var(--text-dim)">Saldo</div><div class="amount">$${state.balance.toFixed(2)}</div></div>
         <button class="btn btn-green" onclick="showSection('wallet')">Recargar</button></div>
       </div>
@@ -421,6 +430,7 @@ function addToCart(id, force) {
 }
 function removeFromCart(idx) { state.cart.splice(idx,1); saveState(); showSection('cart'); }
 function checkout() {
+  if (!state.token) { showAuth(); return showToast('Debes iniciar sesión para comprar'); }
   const total = state.cart.reduce((s,i)=>s+i.price*i.qty*i.months,0);
   if (total > state.balance) return showToast('Saldo insuficiente');
   if (!confirm('¿Confirmar compra por $'+total.toFixed(2)+'?')) return;
@@ -487,6 +497,90 @@ function doRecharge() {
 
 loadState();
 showSection('dashboard', document.querySelector('.nav-item'));
+
+function getGreeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Buenos días';
+  if (h < 19) return 'Buenas tardes';
+  return 'Buenas noches';
+}
+function updateGreeting() {
+  const el = document.getElementById('greeting');
+  if (!el) return;
+  const name = state.user ? state.user.name : '';
+  el.textContent = name ? `${getGreeting()}, ${name} ✨` : '¡Hola! ✨';
+}
+function showAuth(force=false) {
+  document.getElementById('auth-modal').style.display = 'flex';
+  document.getElementById('auth-error').textContent = '';
+}
+function hideAuth() { document.getElementById('auth-modal').style.display = 'none'; }
+function toggleAuthMode() {
+  authMode = authMode === 'login' ? 'register' : 'login';
+  document.getElementById('auth-title').textContent = authMode === 'login' ? 'Iniciar sesión' : 'Crear cuenta';
+  document.getElementById('auth-name').style.display = authMode === 'register' ? 'block' : 'none';
+  document.getElementById('auth-switch').textContent = authMode === 'login' ? '¿No tienes cuenta? Regístrate' : '¿Ya tienes cuenta? Inicia sesión';
+}
+async function doAuth() {
+  const name = document.getElementById('auth-name').value.trim();
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-pass').value;
+  const err = document.getElementById('auth-error');
+  err.textContent = '';
+  if (authMode === 'register' && !name) return err.textContent = 'El nombre es obligatorio';
+  if (!email || !password) return err.textContent = 'Correo y contraseña son obligatorios';
+  try {
+    const url = authMode === 'register' ? '/api/register' : '/api/login';
+    const body = authMode === 'register' ? {name, email, password} : {email, password};
+    const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const data = await res.json();
+    if (!res.ok) return err.textContent = data.error || 'Error';
+    state.token = data.token;
+    state.user = data.user;
+    state.balance = data.user.balance;
+    localStorage.setItem('gaspke-token', data.token);
+    localStorage.setItem('gaspke-user', JSON.stringify(data.user));
+    hideAuth();
+    updateGreeting();
+    showToast(authMode === 'register' ? 'Cuenta creada' : 'Sesión iniciada');
+    loadUserData();
+    showSection('dashboard');
+  } catch(e) { err.textContent = 'Error de conexión'; }
+}
+async function loadUserData() {
+  if (!state.token) return;
+  try {
+    const acc = await fetch('/api/accounts', {headers:{'Authorization':'Bearer '+state.token}}).then(r=>r.json());
+    const sales = await fetch('/api/sales', {headers:{'Authorization':'Bearer '+state.token}}).then(r=>r.json());
+    state.accounts = acc;
+    state.sales = sales;
+    saveState();
+  } catch(e) {}
+}
+function logout() {
+  state.user = null; state.token = null; state.accounts = []; state.sales = [];
+  localStorage.removeItem('gaspke-token');
+  localStorage.removeItem('gaspke-user');
+  updateGreeting();
+  showToast('Sesión cerrada');
+  showSection('dashboard');
+}
+
 </script>
+
+<div id="auth-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:var(--card); padding:28px; border-radius:18px; width:90%; max-width:380px; box-shadow:var(--shadow);">
+    <h2 id="auth-title" style="margin-bottom:16px; color:var(--accent);">Iniciar sesión</h2>
+    <input id="auth-name" placeholder="Nombre" style="width:100%; padding:12px; margin-bottom:10px; border:1px solid var(--border); border-radius:10px; display:none;">
+    <input id="auth-email" type="email" placeholder="Correo electrónico" style="width:100%; padding:12px; margin-bottom:10px; border:1px solid var(--border); border-radius:10px;">
+    <input id="auth-pass" type="password" placeholder="Contraseña" style="width:100%; padding:12px; margin-bottom:16px; border:1px solid var(--border); border-radius:10px;">
+    <button class="btn" style="width:100%; margin-bottom:10px;" onclick="doAuth()">Continuar</button>
+    <p style="text-align:center; font-size:13px; color:var(--text-dim);">
+      <span id="auth-switch" onclick="toggleAuthMode()" style="cursor:pointer; color:var(--accent); font-weight:700;">¿No tienes cuenta? Regístrate</span>
+    </p>
+    <p id="auth-error" style="color:#ef4444; font-size:13px; margin-top:8px; text-align:center;"></p>
+  </div>
+</div>
+
 </body>
 </html>

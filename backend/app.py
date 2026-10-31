@@ -1,6 +1,8 @@
 import sqlite3
 import json
 import os
+import hashlib
+import secrets
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -43,6 +45,9 @@ DEFAULT_PLATFORMS = [
     {"id": "youtube_music", "name": "YouTube Music", "icon": "Y", "color": "#ff0000", "price": 1.70, "stock": 19},
 ]
 
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -62,36 +67,50 @@ def init_db():
         )
     ''')
     c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            balance REAL DEFAULT 50.0,
+            created_at TEXT
+        )
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             platform TEXT NOT NULL,
             email TEXT NOT NULL,
             password TEXT NOT NULL,
             pin TEXT,
             expires TEXT,
             bought TEXT,
-            created_at TEXT
+            created_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     ''')
     c.execute('''
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             date TEXT,
             total REAL,
-            items INTEGER
+            items INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     ''')
     c.execute('''
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER,
+            created_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     ''')
-    # Init balance if not exists
-    c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('balance', '50.00')")
-    # Seed platforms if empty
-    c.execute("SELECT COUNT(*) as cnt FROM platforms")
-    if c.fetchone()['cnt'] == 0:
+    # Init platforms if empty
+    count = c.execute('SELECT COUNT(*) FROM platforms').fetchone()[0]
+    if count == 0:
         for p in DEFAULT_PLATFORMS:
             c.execute('''
                 INSERT INTO platforms (id, name, icon, color, price, stock)
@@ -100,100 +119,113 @@ def init_db():
     conn.commit()
     conn.close()
 
+def get_user_from_token(token):
+    if not token:
+        return None
+    conn = get_db()
+    row = conn.execute('SELECT user_id FROM sessions WHERE token=?', (token,)).fetchone()
+    conn.close()
+    return row['user_id'] if row else None
+
 @app.route('/')
 def index():
-    return send_from_directory('..', 'index.html')
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.json
+    name = data.get('name', '').strip()
+    email = data.get('email', '').strip().lower()
+    password = data.get('password', '')
+    if not name or not email or not password:
+        return jsonify({"error": "Nombre, correo y contraseña son obligatorios"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "La contraseña debe tener al menos 6 caracteres"}), 400
+    conn = get_db()
+    try:
+        conn.execute('''
+            INSERT INTO users (name, email, password, balance, created_at)
+            VALUES (?, ?, ?, 50.0, ?)
+        ''', (name, email, hash_password(password), datetime.now().isoformat()))
+        conn.commit()
+        user_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        token = secrets.token_hex(32)
+        conn.execute('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)',
+                     (token, user_id, datetime.now().isoformat()))
+        conn.commit()
+        user = conn.execute('SELECT id, name, email, balance FROM users WHERE id=?', (user_id,)).fetchone()
+        conn.close()
+        return jsonify({"ok": True, "token": token, "user": dict(user)})
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "El correo ya está registrado"}), 400
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email', '').strip().lower()
+    password = data.get('password', '')
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE email=?', (email,)).fetchone()
+    if not user or user['password'] != hash_password(password):
+        conn.close()
+        return jsonify({"error": "Correo o contraseña incorrectos"}), 401
+    token = secrets.token_hex(32)
+    conn.execute('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)',
+                 (token, user['id'], datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "token": token, "user": {"id": user['id'], "name": user['name'], "email": user['email'], "balance": user['balance']}})
+
+@app.route('/api/me', methods=['GET'])
+def me():
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    user_id = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "No autenticado"}), 401
+    conn = get_db()
+    user = conn.execute('SELECT id, name, email, balance FROM users WHERE id=?', (user_id,)).fetchone()
+    conn.close()
+    if not user:
+        return jsonify({"error": "Usuario no encontrado"}), 404
+    return jsonify(dict(user))
 
 @app.route('/api/platforms', methods=['GET'])
 def get_platforms():
     conn = get_db()
-    rows = conn.execute('SELECT * FROM platforms ORDER BY name').fetchall()
+    rows = conn.execute('SELECT * FROM platforms').fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-@app.route('/api/platforms', methods=['POST'])
-def add_platform():
-    data = request.json
-    conn = get_db()
-    try:
-        conn.execute('''
-            INSERT INTO platforms (id, name, icon, color, price, stock)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (data['id'], data['name'], data.get('icon', data['name'][0]), data.get('color', '#ff6b9d'), data['price'], data['stock']))
-        conn.commit()
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-    finally:
-        conn.close()
-
-@app.route('/api/platforms/<pid>', methods=['PUT'])
-def update_platform(pid):
-    data = request.json
-    conn = get_db()
-    conn.execute('''
-        UPDATE platforms SET name=?, price=?, stock=?, color=?, icon=?
-        WHERE id=?
-    ''', (data.get('name'), data.get('price'), data.get('stock'), data.get('color'), data.get('icon'), pid))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-@app.route('/api/platforms/<pid>', methods=['DELETE'])
-def delete_platform(pid):
-    conn = get_db()
-    conn.execute('DELETE FROM platforms WHERE id=?', (pid,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-@app.route('/api/balance', methods=['GET'])
-def get_balance():
-    conn = get_db()
-    row = conn.execute("SELECT value FROM settings WHERE key='balance'").fetchone()
-    conn.close()
-    return jsonify({"balance": float(row['value']) if row else 50.0})
-
-@app.route('/api/balance', methods=['POST'])
-def update_balance():
-    data = request.json
-    amount = data.get('amount', 0)
-    conn = get_db()
-    row = conn.execute("SELECT value FROM settings WHERE key='balance'").fetchone()
-    current = float(row['value']) if row else 50.0
-    new_bal = current + amount
-    conn.execute("UPDATE settings SET value=? WHERE key='balance'", (str(new_bal),))
-    conn.commit()
-    conn.close()
-    return jsonify({"balance": new_bal})
-
 @app.route('/api/accounts', methods=['GET'])
 def get_accounts():
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    user_id = get_user_from_token(token)
+    if not user_id:
+        return jsonify([])
     conn = get_db()
-    rows = conn.execute('SELECT * FROM accounts ORDER BY id DESC').fetchall()
+    rows = conn.execute('SELECT * FROM accounts WHERE user_id=? ORDER BY id DESC', (user_id,)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
 @app.route('/api/checkout', methods=['POST'])
 def checkout():
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    user_id = get_user_from_token(token)
+    if not user_id:
+        return jsonify({"error": "Debes iniciar sesión para comprar"}), 401
     data = request.json
-    items = data.get('items', [])  # [{id, name, price, months, qty}]
+    items = data.get('items', [])
     if not items:
         return jsonify({"error": "Carrito vacío"}), 400
-
-    total = sum(i['price'] * i['qty'] * i['months'] for i in items)
     conn = get_db()
-    row = conn.execute("SELECT value FROM settings WHERE key='balance'").fetchone()
-    balance = float(row['value']) if row else 0
-    if total > balance:
+    user = conn.execute('SELECT balance FROM users WHERE id=?', (user_id,)).fetchone()
+    total = sum(i['price'] * i['qty'] * i.get('months', 1) for i in items)
+    if user['balance'] < total:
         conn.close()
         return jsonify({"error": "Saldo insuficiente"}), 400
-
-    # Deduct balance
-    new_bal = balance - total
-    conn.execute("UPDATE settings SET value=? WHERE key='balance'", (str(new_bal),))
-
-    # Create accounts & reduce stock
+    new_bal = user['balance'] - total
+    conn.execute('UPDATE users SET balance=? WHERE id=?', (new_bal, user_id))
     now = datetime.now()
     created = []
     for item in items:
@@ -204,45 +236,31 @@ def checkout():
             return jsonify({"error": f"Stock insuficiente para {item['name']}"}), 400
         conn.execute('UPDATE platforms SET stock = stock - ? WHERE id=?', (item['qty'], item['id']))
         for _ in range(item['qty']):
-            exp = now + timedelta(days=30 * item['months'])
+            exp = now + timedelta(days=30 * item.get('months', 1))
             email = f"user{os.urandom(2).hex()}@gaspke.shop"
             password = 'Pass' + os.urandom(4).hex() + '!'
             pin = str(1000 + (os.urandom(2)[0] % 9000))
             conn.execute('''
-                INSERT INTO accounts (platform, email, password, pin, expires, bought, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (item['name'], email, password, pin, exp.strftime('%d/%m/%Y'), now.strftime('%d/%m/%Y'), now.isoformat()))
+                INSERT INTO accounts (user_id, platform, email, password, pin, expires, bought, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, item['name'], email, password, pin, exp.strftime('%d/%m/%Y'), now.strftime('%d/%m/%Y'), now.isoformat()))
             created.append({"platform": item['name'], "email": email, "password": password, "pin": pin})
-
-    conn.execute('INSERT INTO sales (date, total, items) VALUES (?, ?, ?)',
-                 (now.isoformat(), total, sum(i['qty'] for i in items)))
+    conn.execute('INSERT INTO sales (user_id, date, total, items) VALUES (?, ?, ?, ?)',
+                 (user_id, now.isoformat(), total, sum(i['qty'] for i in items)))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "balance": new_bal, "accounts": created})
 
 @app.route('/api/sales', methods=['GET'])
 def get_sales():
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    user_id = get_user_from_token(token)
+    if not user_id:
+        return jsonify([])
     conn = get_db()
-    rows = conn.execute('SELECT * FROM sales ORDER BY id DESC').fetchall()
+    rows = conn.execute('SELECT * FROM sales WHERE user_id=? ORDER BY id DESC', (user_id,)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
-
-@app.route('/api/reset', methods=['POST'])
-def reset():
-    # Optional: reset to defaults (for demo)
-    conn = get_db()
-    conn.execute('DELETE FROM accounts')
-    conn.execute('DELETE FROM sales')
-    conn.execute("UPDATE settings SET value='50.00' WHERE key='balance'")
-    conn.execute('DELETE FROM platforms')
-    for p in DEFAULT_PLATFORMS:
-        conn.execute('''
-            INSERT INTO platforms (id, name, icon, color, price, stock)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (p['id'], p['name'], p['icon'], p['color'], p['price'], p['stock']))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
 
 if __name__ == '__main__':
     init_db()
