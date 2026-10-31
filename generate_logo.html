@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { margin:0; background:#0a0a0f; display:flex; align-items:center; justify-content:center; height:100vh; }
+.logo { width:512px; height:512px; border-radius:50%; background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%); display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 20px 60px rgba(0,0,0,0.6); position:relative; overflow:hidden; }
+.logo::before { content:''; position:absolute; inset:-2px; border-radius:50%; background:conic-gradient(from 180deg,#e50914,#00a8e1,#8b5cf6,#f59e0b,#e50914); z-index:-1; filter:blur(8px); }
+.inner { background:#0a0a0f; border-radius:50%; width:480px; height:480px; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+.name { font-family:system-ui,sans-serif; font-weight:800; font-size:42px; letter-spacing:-1px; background:linear-gradient(90deg,#fff,#c7d2fe); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.sub { font-family:system-ui,sans-serif; font-size:14px; color:#94a3b8; letter-spacing:3px; margin-top:4px; }
+.play { width:80px; height:80px; background:linear-gradient(135deg,#e50914,#b91c1c); border-radius:20px; display:flex; align-items:center; justify-content:center; margin-bottom:20px; }
+.play::after { content:''; width:0; height:0; border-left:22px solid white; border-top:14px solid transparent; border-bottom:14px solid transparent; margin-left:6px; }
+</style>
+</head>
+<body>
+<div class="logo">
+  <div class="inner">
+    <div class="play"></div>
+    <div class="name">GaspKe</div>
+    <div class="sub">SHOPP</div>
+  </div>
+</div>
+</body>
+</html>
