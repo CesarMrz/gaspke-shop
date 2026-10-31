@@ -166,9 +166,9 @@ def register():
         user = conn.execute('SELECT id,name,email,balance FROM users WHERE id=?', (uid,)).fetchone()
         conn.close()
         return jsonify({"ok": True, "token": token, "user": dict(user)})
-    except:
+    except Exception as e:
         conn.close()
-        return jsonify({"error": "Correo ya registrado"}), 400
+        return jsonify({"error": str(e)}), 400
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -193,7 +193,8 @@ def platforms():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-if __name__ == '__main__':
+init_db()
+if __name__ == "__main__":
     init_db()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
